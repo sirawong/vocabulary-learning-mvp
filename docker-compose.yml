@@ -1,0 +1,158 @@
+version: '3.8'
+
+services:
+  # MongoDB Database
+  mongodb:
+    image: mongo:7
+    container_name: vocab-mongodb
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USERNAME}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
+      MONGO_INITDB_DATABASE: ${MONGO_DATABASE}
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+      - ./scripts/mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
+    networks:
+      - vocab-network
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.runCommand('ping')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: vocab-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - vocab-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # Text Service (Port 8000) - API Gateway
+  text-service:
+    build:
+      context: ./services/text-service
+      dockerfile: Dockerfile
+    container_name: vocab-text-service
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      NODE_ENV: production
+      PORT: 8000
+      MONGODB_URI: mongodb://${MONGO_ROOT_USERNAME}:${MONGO_ROOT_PASSWORD}@mongodb:27017/${MONGO_DATABASE}?authSource=admin
+      REDIS_URL: redis://redis:6379
+      DICTIONARY_SERVICE_URL: http://dictionary-service:8002
+      LEARNING_SERVICE_URL: http://learning-service:8003
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - vocab-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Dictionary Service (Port 8002)
+  dictionary-service:
+    build:
+      context: ./services/dictionary-service
+      dockerfile: Dockerfile
+    container_name: vocab-dictionary-service
+    restart: unless-stopped
+    ports:
+      - "8002:8002"
+    environment:
+      NODE_ENV: production
+      PORT: 8002
+      MONGODB_URI: mongodb://${MONGO_ROOT_USERNAME}:${MONGO_ROOT_PASSWORD}@mongodb:27017/${MONGO_DATABASE}?authSource=admin
+      REDIS_URL: redis://redis:6379
+      DICTIONARY_API_KEY: ${DICTIONARY_API_KEY}
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - vocab-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Learning Service (Port 8003)
+  learning-service:
+    build:
+      context: ./services/learning-service
+      dockerfile: Dockerfile
+    container_name: vocab-learning-service
+    restart: unless-stopped
+    ports:
+      - "8003:8003"
+    environment:
+      NODE_ENV: production
+      PORT: 8003
+      MONGODB_URI: mongodb://${MONGO_ROOT_USERNAME}:${MONGO_ROOT_PASSWORD}@mongodb:27017/${MONGO_DATABASE}?authSource=admin
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - vocab-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Frontend (Next.js)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: vocab-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+      NEXT_PUBLIC_DICTIONARY_URL: ${NEXT_PUBLIC_DICTIONARY_URL:-http://localhost:8002}
+      NEXT_PUBLIC_LEARNING_URL: ${NEXT_PUBLIC_LEARNING_URL:-http://localhost:8003}
+    depends_on:
+      - text-service
+      - dictionary-service
+      - learning-service
+    networks:
+      - vocab-network
+
+networks:
+  vocab-network:
+    driver: bridge
+
+volumes:
+  mongodb_data:
+    driver: local
+  redis_data:
+    driver: local
+    
